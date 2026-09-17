@@ -1,0 +1,33 @@
+node_modules/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.env
+.env.*
+coverage/
+dist/
+*.tgz
+.miniprogram_npm/
+.tmp*
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+
+# 分发打包产物
+*.zip
+*.7z
+
+# e2e 测试产物：含本机绝对路径 / 微信登录态 / AppID 等隐私，不入库。
+# 用通配覆盖所有 e2e 的 .json / .md 产物，以后新增报告文件自动被挡住，
+# 不用再手动补文件名（e2e*.js 是脚本本身，不受影响）
+e2e-*.json
+e2e-*.md
+
+# e2e 本机夹具：含被测项目的真实页面路径与选择器，不入库（模板见 e2e.config.example.js）
+e2e.config.js
+
+# WorkBuddy 项目数据（本地记忆 / 会话数据，不入库）
+.workbuddy/

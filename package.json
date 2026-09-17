@@ -1,0 +1,47 @@
+{
+  "name": "miniprogram-devtools-mcp",
+  "version": "0.4.0",
+  "description": "MCP server for WeChat DevTools automation via miniprogram-automator + official wechatide CLI",
+  "type": "commonjs",
+  "main": "index.js",
+  "bin": {
+    "miniprogram-devtools-mcp": "index.js"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "checks/",
+    "smoke.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node index.js",
+    "smoke": "node smoke.js",
+    "prepublishOnly": "npm run smoke"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "miniprogram-automator": "^0.12.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "wechat",
+    "miniprogram",
+    "devtools",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrC-Sinclair/miniprogram-devtools-mcp.git"
+  },
+  "homepage": "https://github.com/MrC-Sinclair/miniprogram-devtools-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/MrC-Sinclair/miniprogram-devtools-mcp/issues"
+  },
+  "author": "MrC-Sinclair"
+}
