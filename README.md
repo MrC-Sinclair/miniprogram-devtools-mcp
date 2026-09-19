@@ -564,6 +564,25 @@ npm publish
 
 **解决**：打开开发者工具扫码登录后重试。可先调 `wechatide_status` 确认登录态。
 
+### wechatide 返回 `wechatide_auth_required`（工具未就绪 / 需要重新授权）
+
+**原因**：官方 CLI 输出了 `Failed to connect to WechatIDE` / 提示跑 `wechatide auth -c <client>` /
+`requires toolCall:auth`。常见两种情况：开发者工具**冷启动尚未完成**，或某个工具需要一次
+**独立的授权握手**（IDE 里会弹「同意」框）。
+注意这**不是**服务端口没开、也不是登录失效——冷启动期间安全设置里的端口其实通常是开着的，
+照着 `port_disabled` 的指引去改设置会白折腾一圈。
+
+**解决**：确认开发者工具已启动并打开了项目窗口 → 工具内点「同意」→ 重试。冷启动场景稍等
+10-20 秒再试通常即可，一般无需改动安全设置。
+
+### wechatide 返回 `task_not_found`（异步任务已不存在）
+
+**原因**：`wechatide_poll_task` 查询的 `taskId` 已从 IDE 侧消失——多半是确认弹窗超时被关闭，
+也可能是任务完成后结果被回收。两种情况下这个 `taskId` 都已经没用了。
+
+**解决**：**重新调用原工具**再走一次（不要继续轮询同一个 `taskId`）。上传类操作请留意
+开发者工具里的确认弹窗，在它超时前点掉。
+
 ### wechatide 返回 `ide_window_not_active`（项目窗口没打开 / 没激活）
 
 **原因**：官方 CLI 取不到窗口句柄（底层报错 `Cannot read properties of undefined (reading 'winId')`）。截图 / 日志类工具依赖项目窗口，窗口被最小化到托盘或被别的窗口盖住时都可能触发，属 IDE 侧行为。
