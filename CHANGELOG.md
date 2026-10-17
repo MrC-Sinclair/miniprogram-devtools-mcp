@@ -4,8 +4,40 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 跟随微信开发者工具 2.02.2609231 RC / wechatide-skill v0.3.11 / miniprogram-automator 0.13.0
+  （2026-10-15 发布）验证：`miniprogram-automator` 依赖 `^0.12.1` → `^0.13.0`。
+  注意 0.x 的 caret 不会跨 minor，不手动改永远升不上来。API 层全兼容
+  （connect / pageStack / navigateTo / navigateBack / currentPage / evaluate /
+  callWxMethod / page.\$ / setData / 元素操作均未变）；`disconnect()` 由同步改异步，
+  本 MCP 调用点本就全部 await，且顺带修复了旧版 dispose 不等待 ws 关闭的问题。
+  0.13.0 新增 `mp.native()`（鸿蒙原生操控）与 `mp.CDP()`（CDP 透传），暂未封装。
+
+### Added
+
+- `wechatide_status` 新增官方 skill 版本自检：向 `check_wechatide_status` 上报本 MCP
+  验证过的官方 skill 版本（`lib/wechatide.js` 的 `TESTED_SKILL_VERSION`，当前 `0.3.11`），
+  官方 skill 随工具升级后返回 `versionRelation: agent_behind` 并附升级提示——
+  把「开发者工具更新后本 MCP 要不要跟进」变成 MCP 的自诊断信息。新增 `skillVersion` 参数可覆盖。
+- 新增 `wechatide_help` 工具（第 31 个）：官方 wechatide 工具的**动态发现**，离线可用
+  （不连 IDE、不触发授权）。不传 `tool` 返回当前开发者工具内置的完整工具清单
+  （分组/摘要/必填参数/废弃标记/官方 skill 版本）；传 `tool` 返回该工具完整参数定义
+  （含 action 枚举）。数据源为官方 skill 目录的 `tools.yaml` 权威定义，
+  回落 `wechatide --help` 解析——官方增改废工具实时反映，本 MCP 不再硬编码官方工具清单，
+  从机制上保证「对比不漏」。注意 CLI `--help` 不展示 deprecated 工具
+  （当前 `project_setting_get` / `project_setting_update` 均已被官方废弃，
+  改为直接读写 `project.config.json`），故以 tools.yaml 为准。
+- `upload` / `auto_preview` 工具描述补入官方 pendingTask 恢复规则：重发前必须先用旧
+  `taskId` 调 `wechatide_poll_task`（pending 不重发 / success 用旧结果 / 仅
+  failed·cancelled·expired 才重发）。
+
 ### Fixed
 
+- `wechatide_call` 透传的对象/数组参数修复：`buildFlags` 此前用 `String(value)`，
+  对象参数会变成 `"[object Object]"`、数组变成 `"a,b"`——命令不报错但语义全丢（静默传错）。
+  现按官方 CLI 的 `<json>` 参数约定序列化为 JSON 文本；超大 JSON 可用官方
+  `--<参数>-file <path>` 变体（`wechatide_help` 会展示该变体）。
 - `wechatide` 通道新增 `wechatide_auth_required` 错误分类：官方 CLI 输出
   `Failed to connect to WechatIDE` / `requires toolCall:auth` 时不再落入通用错误
   让 Agent 原地重试，而是返回定向 blocker 并提示点「同意」授权。

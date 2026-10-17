@@ -5,13 +5,14 @@
  * 工作机制：
  * 1. 调用 ensure_ready：自动探测端口 → 未监听则 spawn cli 启动 → 连接（全自助）
  * 2. 或直接调用 connect 连接已运行的自动化端口
- * 3. 暴露 30 个工具：
+ * 3. 暴露 31 个工具：
  *    - automator 直连（20）：ensure_ready/auto_test/connect/disconnect/status/evaluate/page_stack/
  *      navigate_to/navigate_back/get_current_page/call_wx_api/get_data/element_tap/element_input/
  *      element_scroll/preflight/rebuild/build_npm/list_checks/run_check
- *    - 官方 wechatide CLI 封装（10，补 automator 覆盖不到的能力，含 wechatide_call 通用透传）：
- *      wechatide_status/wechatide_poll_task/simulator_screenshot/get_simulator_console/
- *      get_simulator_network/create_preview_qrcode/auto_preview/upload/project_list
+ *    - 官方 wechatide CLI 封装（11，补 automator 覆盖不到的能力，含 wechatide_call 通用透传
+ *      与 wechatide_help 官方工具动态发现）：
+ *      wechatide_status/wechatide_poll_task/wechatide_help/simulator_screenshot/get_simulator_console/
+ *      get_simulator_network/create_preview_qrcode/auto_preview/upload/project_list/wechatide_call
  *
  * 设计原则：AI Agent 优先自助（ensure_ready），仅 DevTools 未安装/未登录/服务端口未开
  * 这 3 种情况才需人工介入，错误返回会明确标注 blocker 字段。
@@ -48,19 +49,21 @@ const {
   WechatideError,
   CLIENT_ENV,
   TOKEN_ENV,
+  TESTED_SKILL_VERSION,
+  listOfficialTools,
+  getToolHelp,
 } = require('./lib/wechatide');
 
-/** 官方 wechatide 全量工具名（用于 wechatide_call 透传的提示文案） */
-const WECHATIDE_ALL_TOOLS =
-  'check_wechatide_status, open_project_window, close_project_window, quit, login, ' +
-  'polling_task_result, project_import, project_remove, share_minicode, import_minicode, ' +
-  'get_user_appids, simulator_open_page, simulator_refresh, compile_wxml, compile_wxss, ' +
-  'debug_clear_cache, automation_element_action, automation_game_action, automation_evaluate, ' +
-  'automation_generate_script, automation_navigate, automation_page_action, automation_runtime_info, ' +
-  'automation_testaccount, automation_viewport_action, automation_wx_api, ' +
-  'cloud_env_list, cloud_fn_deploy, cloud_fn_inc_deploy, cloud_fn_info, cloud_fn_list, ' +
-  'cloud_db_read_doc, cloud_db_read_struct, cloud_db_write_doc, cloud_db_write_struct, ' +
-  'cloud_query_storage, cloud_manage_storage';
+/**
+ * wechatide_call 透传的护栏提示。官方工具清单**不在此硬编码**——
+ * 随开发者工具版本增减，写死就会漏/腐烂；清单与参数一律由 wechatide_help
+ * 动态获取（跑官方 CLI 自己的 --help / -h，永远与当前安装版本一致）。
+ */
+const WECHATIDE_PASSTHRU_NOTES =
+  'automation_* 会与本 MCP 的自动化会话抢连接（已连接时会被拒绝，先 disconnect）；' +
+  'quit/project_remove/debug_clear_cache 是破坏性操作，args 里需 {"confirm": true}；' +
+  '对象/数组参数传 JSON 值即可（自动序列化），超大 JSON 可用官方 --<参数>-file 变体；' +
+  '不确定工具名或参数时，先调 wechatide_help 动态查询，不要凭记忆编造。';
 
 // 默认配置
 const DEFAULT_PORT = 9420;
@@ -518,9 +521,12 @@ const TOOLS = [
     name: 'wechatide_status',
     description:
       '读取微信开发者工具状态（走官方 wechatide CLI）：登录态 loginExpired、当前用户、' +
-      '是否启用 CLI 令牌 tokenRequired。首次调用会触发一次客户端授权弹窗（默认客户端名 miniprogram-mcp）；' +
+      '是否启用 CLI 令牌 tokenRequired、以及官方 wechatide-skill 版本关系 versionRelation' +
+      '（equal / agent_ahead / agent_behind）。首次调用会触发一次客户端授权弹窗（默认客户端名 miniprogram-mcp）；' +
       '若用户未及时点击，约 12s 后返回 {pending, taskId, userAction}——把 userAction 原样转告用户，' +
-      '确认后用 wechatide_poll_task 续查。不触发登录；登录失效时提示人工扫码。',
+      '确认后用 wechatide_poll_task 续查。不触发登录；登录失效时提示人工扫码。' +
+      'versionRelation=agent_behind 表示官方 skill 已比本 MCP 验证过的版本更新，' +
+      '返回值里会带升级提示。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -531,6 +537,11 @@ const TOOLS = [
         token: {
           type: 'string',
           description: 'CLI 访问令牌；工具未启用令牌校验时省略，可用环境变量 WECHATIDE_TOKEN 覆盖',
+        },
+        skillVersion: {
+          type: 'string',
+          description:
+            '上报给官方的 skill 版本（用于 versionRelation 比对）；默认本 MCP 验证过的官方 skill 版本，一般无需传',
         },
       },
     },
@@ -625,7 +636,10 @@ const TOOLS = [
     name: 'auto_preview',
     description:
       '把预览版直接推送到开发者的微信（走官方 wechatide CLI），无需扫码取二维码。' +
-      '需要当前登录用户有该 AppID 的预览权限。仅在用户明确要求预览时调用。',
+      '需要当前登录用户有该 AppID 的预览权限。仅在用户明确要求预览时调用。' +
+      '返回 {pending, taskId, userAction} 时（等待用户在开发者工具内确认）先转告用户；' +
+      '重试前必须先用旧 taskId 调 wechatide_poll_task，pending 不得重发、' +
+      'success 直接用旧结果、仅 failed/cancelled/expired 才允许重发。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -641,7 +655,9 @@ const TOOLS = [
     description:
       '上传代码包发布体验版（走官方 wechatide CLI）。仅在用户明确要求「上传代码」「发布体验版」时调用；' +
       '需用户在开发者工具内确认时，约 45s 内未确认即返回 {pending, taskId, userAction}——' +
-      '把 userAction 转告用户，确认后用 wechatide_poll_task 续查。',
+      '把 userAction 转告用户，确认后用 wechatide_poll_task 续查。' +
+      '重试/重新发起前必须先用旧 taskId 调 wechatide_poll_task：pending 不得重发、' +
+      'success 直接用旧结果、仅 failed/cancelled/expired 才允许重发（官方 pendingTask 恢复规则）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -670,16 +686,38 @@ const TOOLS = [
     },
   },
   {
+    name: 'wechatide_help',
+    description:
+      '官方 wechatide 工具的动态清单与参数查询（离线可用，不连接 IDE、不触发授权）：' +
+      '不传 tool 返回当前开发者工具内置的完整工具清单（分组/名称/摘要/官方 skill 版本号/工具总数）；' +
+      '传 tool 返回该工具的完整参数定义（必填项、类型、action 枚举、--xxx-file 变体）。' +
+      '官方工具随开发者工具版本实时增减，本工具反映当前安装版本的事实——' +
+      '用 wechatide_call 透传任何工具前先在这里确认名称与参数，这是「不漏官方能力」的保障。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: {
+          type: 'string',
+          description: '官方工具名（下划线命名，如 simulator_screenshot / automation_element_action）；不传则列出全部工具',
+        },
+        client: {
+          type: 'string',
+          description: '客户端简称（查参数时随命令上报）；默认 miniprogram-mcp',
+        },
+        token: { type: 'string', description: 'CLI 访问令牌；查询帮助一般不需要' },
+      },
+    },
+  },
+  {
     name: 'wechatide_call',
     description:
       '通用透传：调用任意官方 wechatide CLI 工具（覆盖未单独封装的长尾能力，' +
       '如云开发 cloud_*、get_user_appids、simulator_refresh、simulator_open_page、' +
-      'compile_wxml/compile_wxss、debug_clear_cache、login、share_minicode 等）。' +
+      'compile_wxml/compile_wxss、debug_clear_cache、login、share_minicode 等；' +
+      '完整清单用 wechatide_help 动态获取）。' +
       'args 传参数对象（key 用 camelCase 或 kebab-case，自动转 --kebab-flag）；' +
       '传 projectPath 会自动注入 --project。' +
-      '注意：automation_* 会与本 MCP 的自动化会话抢连接（已连接时会被拒绝，先 disconnect）；' +
-      'quit/project_remove/debug_clear_cache 是破坏性操作，args 里需 {"confirm": true}。' +
-      '可用工具名：' + WECHATIDE_ALL_TOOLS,
+      WECHATIDE_PASSTHRU_NOTES,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1397,9 +1435,12 @@ function handleListChecks() {
 async function handleWechatideStatus(args) {
   try {
     const ctx = wechatideContext(args);
+    // 上报本 MCP 验证过的官方 skill 版本：官方随工具升级后 versionRelation 会翻成
+    // agent_behind，把「官方能力已更新、本 MCP 可能落后」变成自诊断信息
     const { result } = await callWechatide({
       wechatidePath: ctx.wechatidePath,
       tool: 'check_wechatide_status',
+      args: buildFlags({ 'skill-version': args.skillVersion || TESTED_SKILL_VERSION }),
       client: ctx.client,
       token: ctx.token,
       timeoutMs: 120000,
@@ -1409,6 +1450,13 @@ async function handleWechatideStatus(args) {
     if (result.loginExpired === true) {
       data.blocker = 'wechatide_not_logged_in';
       data.hint = '微信开发者工具登录已失效，需人工打开工具扫码登录后重试';
+    }
+    // 官方 skill 比本 MCP 验证过的版本新：不阻塞使用，但明确提示可升级
+    if (result.versionRelation === 'agent_behind') {
+      data.hint =
+        `官方 wechatide-skill 已更新到比本 MCP 验证过的版本（${TESTED_SKILL_VERSION}）更新，` +
+        '本 MCP 的封装可能落后于官方新能力：可查官方更新日志，按需升级本 MCP ' +
+        '（长尾工具走 wechatide_call 透传通常不受影响）';
     }
     return ok(data);
   } catch (e) {
@@ -1428,6 +1476,38 @@ async function handleWechatidePollTask(args) {
       token: ctx.token,
     });
     return ok(result);
+  } catch (e) {
+    return wechatideErr(e);
+  }
+}
+
+/**
+ * 官方工具的动态发现：不传 tool 列清单，传 tool 看参数。
+ * 数据源是官方 CLI 自己的 --help / -h，因此永远与当前安装的开发者工具一致——
+ * 官方新增/改名/废弃工具无需改本 MCP 任何代码，对比时也不会漏。
+ */
+async function handleWechatideHelp(args) {
+  try {
+    const ctx = wechatideContext(args);
+    if (args.tool) {
+      const help = await getToolHelp(ctx.wechatidePath, ctx.client, String(args.tool));
+      return ok({ tool: String(args.tool), help });
+    }
+    const catalog = await listOfficialTools(ctx.wechatidePath);
+    const deprecated = catalog.groups
+      .flatMap((g) => g.tools.filter((t) => t.deprecated).map((t) => t.name))
+      .join(', ');
+    return ok({
+      ...catalog,
+      testedSkillVersion: TESTED_SKILL_VERSION,
+      hint:
+        `共 ${catalog.toolCount} 个官方工具（数据源：${catalog.source}）。` +
+        (deprecated ? `已废弃勿用：${deprecated}。` : '') +
+        (catalog.skillVersion && catalog.skillVersion !== TESTED_SKILL_VERSION
+          ? `官方 skill ${catalog.skillVersion} 比本 MCP 验证过的 ${TESTED_SKILL_VERSION} 新，` +
+            '官方能力以本清单为准，wechatide_call 可透传其中任意工具'
+          : `官方 skill 版本 ${catalog.skillVersion || '未知'}，与本 MCP 验证版本一致`),
+    });
   } catch (e) {
     return wechatideErr(e);
   }
@@ -1554,7 +1634,7 @@ async function handleProjectList(args) {
 }
 
 /**
- * wechatide_call：通用透传，覆盖未单独封装的官方工具（见 WECHATIDE_ALL_TOOLS）。
+ * wechatide_call：通用透传，覆盖未单独封装的官方工具；官方清单与参数由 wechatide_help 动态获取。
  * 两个护栏：
  * - automation_* 会与本 MCP 已持有的 automator 会话（ws 9420）抢连接 → 已连接时明确拒绝并给恢复指引
  * - quit 关闭整个开发者工具 → 需 args 里显式传 confirm=true
@@ -1696,6 +1776,8 @@ async function dispatch(name, args) {
       return handleWechatideStatus(args || {});
     case 'wechatide_poll_task':
       return handleWechatidePollTask(args || {});
+    case 'wechatide_help':
+      return handleWechatideHelp(args || {});
     case 'simulator_screenshot':
       return handleSimulatorScreenshot(args || {});
     case 'get_simulator_console':

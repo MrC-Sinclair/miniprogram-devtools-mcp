@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 全量端到端测试：spawn 本 MCP server，按依赖顺序调用全部 30 个工具，输出结构化报告。
+ * 全量端到端测试：spawn 本 MCP server，按依赖顺序调用全部 31 个工具，输出结构化报告。
  *
  * 用法：
  *   node e2e-all-tools.js
@@ -317,12 +317,13 @@ async function main() {
     const list = await send('tools/list', {});
     const tools = list.result.tools;
     const names = tools.map((t) => t.name);
+    const EXPECTED_TOOLS = 31;
     record({
       tool: 'tools/list',
       group: '协议',
-      verdict: names.length === 30 ? 'PASS' : 'FAIL',
+      verdict: names.length === EXPECTED_TOOLS ? 'PASS' : 'FAIL',
       ms: 0,
-      note: `${names.length} 个工具${names.length === 30 ? '' : '（README 声明 30）'}`,
+      note: `${names.length} 个工具${names.length === EXPECTED_TOOLS ? '' : `（README 声明 ${EXPECTED_TOOLS}）`}`,
       raw: names.join(','),
     });
     const bad = tools.filter((t) => !t.name || !t.description || !t.inputSchema || t.inputSchema.type !== 'object');
@@ -334,7 +335,7 @@ async function main() {
       ms: 0,
       note: bad.length
         ? `缺失字段的工具: ${bad.map((t) => t.name)}`
-        : `30 个工具 schema 完整；${noDesc.length} 个无参工具`,
+        : `${EXPECTED_TOOLS} 个工具 schema 完整；${noDesc.length} 个无参工具`,
       raw: '',
     });
 
