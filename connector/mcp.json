@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "wechat-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "miniprogram-devtools-mcp@0.5.0"],
+      "runtime": {
+        "type": "node",
+        "version": "20"
+      },
+      "npmRegistry": "https://registry.npmmirror.com",
+      "timeout": 30000
+    }
+  }
+}

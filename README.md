@@ -37,6 +37,12 @@ npx（推荐）——加入 MCP 客户端的 `mcpServers`，重启客户端：
 
 其他方式：克隆源码 `npm install && npm run smoke`；团队共用放进项目 `mcp/` 子目录；离线拷贝整个目录（含 `node_modules`）后把 `args` 指向 `index.js`。配置位置：Cursor `~/.cursor/mcp.json`、Claude Desktop `%APPDATA%\Claude\`、Trae `%APPDATA%\Trae CN\User\mcp.json`、WorkBuddy `~/.workbuddy/mcp.json`。
 
+### WorkBuddy 连接器市场
+
+另有连接器形态，给不写配置文件的用户：装完直接说人话即可，MCP 由 WorkBuddy 托管拉起（`npx` + 托管 Node + npm 镜像），无需手动改 `mcp.json`。
+
+包在 [`connector/`](./connector) 目录，仅 5 KB —— 真正的代码在 npm 上，所以**必须先 `npm publish` 再提交连接器审核**。详见 [`connector/README.md`](./connector/README.md)。
+
 ## 环境
 
 Node ≥ 18；微信开发者工具稳定版 1.06+（推荐 2.x，需带 `cli.bat` / `wechatide.cmd`；官方 skill 兼容门槛 2.02.2607152+）。Windows / macOS。
