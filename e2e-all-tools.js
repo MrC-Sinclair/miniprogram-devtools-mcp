@@ -3,7 +3,8 @@
  * 全量端到端测试：spawn 本 MCP server，按依赖顺序调用全部 31 个工具，输出结构化报告。
  *
  * 用法：
- *   node e2e-all-tools.js
+ *   node e2e-all-tools.js              完整模式（含 rebuild / build_npm，会改项目状态）
+ *   E2E_SAFE=1 node e2e-all-tools.js   安全模式（跳过 rebuild / build_npm，不碰项目状态）
  *
  * 产物：
  *   e2e-report.json   机器可读结果
@@ -340,7 +341,7 @@ async function main() {
     });
 
     // ===== 组1：无需 IDE 的只读工具 =====
-    log('\n=== 组1 · 无需 IDE ===');
+    log('\n=== 组1 · 静态工具 + 自愈契约 ===');
     await step('只读', 'status', {}, ({ json }) =>
       json.connected === false ? '未连接时返回 connected:false' : NO(`非预期: ${short(json)}`)
     );
@@ -353,14 +354,19 @@ async function main() {
         ? `${json.checks.length} 个用例: ${json.checks.map((c) => c.name).join(',')}`
         : NO(`checks 为空: ${short(json)}`)
     );
-    await step('只读', 'evaluate', { fn: '() => 1' }, ({ isError, text }) =>
-      isError && /Not connected/.test(text) ? '未连接时正确报错 Not connected' : NO(`期望报错，实际: ${short(text)}`)
+    // 自愈契约：未连接时调用依赖连接的工具，不再抛 "Not connected"，而是自动重连后成功。
+    // （旧契约是抛错；连接自愈上线后这三条由「负例」变成「自愈正例」，见 CHANGELOG。
+    //  因此本组不再是纯「无需 IDE」——冷启动时这里会触发一次 cli 拉起，超时给宽一点。）
+    await step('只读', 'evaluate', { fn: '() => 1' }, ({ isError, json }) =>
+      !isError && json.result === 1 ? '未连接时自动重连并成功（自愈生效）' : NO(`自愈未生效: ${short(json)}`), 180000
     );
-    await step('只读', 'get_data', {}, ({ isError, text }) =>
-      isError && /Not connected/.test(text) ? '未连接时正确报错' : NO(`期望报错，实际: ${short(text)}`)
+    await step('只读', 'get_data', {}, ({ isError, json }) =>
+      !isError && json && typeof json === 'object' && !json.blocker
+        ? '未连接时自动重连并取到 data（自愈生效）'
+        : NO(`自愈未生效: ${short(json)}`), 180000
     );
-    await step('只读', 'page_stack', {}, ({ isError, text }) =>
-      isError && /Not connected/.test(text) ? '未连接时正确报错' : NO(`期望报错，实际: ${short(text)}`)
+    await step('只读', 'page_stack', {}, ({ isError, json }) =>
+      !isError && Array.isArray(json.pages) ? '未连接时自动重连并取到页面栈（自愈生效）' : NO(`自愈未生效: ${short(json)}`), 180000
     );
     await step('只读', 'unknown_tool_xyz', {}, ({ isError, text }) =>
       isError && /Unknown tool/.test(text) ? '未知工具名正确报错' : NO(`期望报错，实际: ${short(text)}`)
@@ -659,36 +665,45 @@ async function main() {
       await step('连接', 'disconnect', {}, () => true, 30000);
     }
 
-    await step(
-      '重建',
-      'rebuild',
-      { reconnect: false },
-      ({ json, isError }) => {
-        if (isError) return NO(`blocker=${json.blocker || '-'} ${short(json.error)}`);
-        return json.ok === true ? `重编译完成 steps=${short(json.steps, 120)}` : NO(`重编译失败: ${short(json)}`);
-      },
-      240000
-    );
-    await step(
-      '重建',
-      'ensure_ready',
-      {},
-      ({ json, isError }) => {
-        if (isError) return NO(`rebuild 后重连失败: ${short(json.error)}`);
-        return `rebuild 后重连成功 port=${json.port}`;
-      },
-      180000
-    );
-    await step(
-      '重建',
-      'build_npm',
-      {},
-      ({ json, isError }) => {
-        if (isError) return NO(`blocker=${json.blocker || '-'} ${short(json.error)}`);
-        return `exitCode=${json.exitCode} timedOut=${json.timedOut} miniprogram_npm 包数=${json.miniprogramNpmPackages}`;
-      },
-      240000
-    );
+    // rebuild / build_npm 是仅有的两个会真改项目状态的工具（关窗重编译 + 重建 miniprogram_npm）。
+    // 设 E2E_SAFE=1 可跳过，让「跑一遍验证」变成随时可做、不需要人事先批准的动作；
+    // 要覆盖它们时才显式跑完整模式（不设该变量即可）。
+    if (process.env.E2E_SAFE === '1') {
+      skip('rebuild', '重建', 'E2E_SAFE=1：rebuild 会关闭并重开项目窗口，跳过');
+      skip('build_npm', '重建', 'E2E_SAFE=1：build_npm 会重建 miniprogram_npm，跳过');
+      log('  E2E_SAFE=1 → rebuild / build_npm 已跳过（不碰项目状态）');
+    } else {
+      await step(
+        '重建',
+        'rebuild',
+        { reconnect: false },
+        ({ json, isError }) => {
+          if (isError) return NO(`blocker=${json.blocker || '-'} ${short(json.error)}`);
+          return json.ok === true ? `重编译完成 steps=${short(json.steps, 120)}` : NO(`重编译失败: ${short(json)}`);
+        },
+        240000
+      );
+      await step(
+        '重建',
+        'ensure_ready',
+        {},
+        ({ json, isError }) => {
+          if (isError) return NO(`rebuild 后重连失败: ${short(json.error)}`);
+          return `rebuild 后重连成功 port=${json.port}`;
+        },
+        180000
+      );
+      await step(
+        '重建',
+        'build_npm',
+        {},
+        ({ json, isError }) => {
+          if (isError) return NO(`blocker=${json.blocker || '-'} ${short(json.error)}`);
+          return `exitCode=${json.exitCode} timedOut=${json.timedOut} miniprogram_npm 包数=${json.miniprogramNpmPackages}`;
+        },
+        240000
+      );
+    }
 
     // ===== 组7：auto_test 一键流水线 =====
     log('\n=== 组7 · auto_test 一键流水线 ===');

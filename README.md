@@ -47,6 +47,16 @@ Node ≥ 18；微信开发者工具稳定版 1.06+（推荐 2.x，需带 `cli.ba
 
 AI 对话里说人话即可（"连上开发者工具" → `ensure_ready`；"读一下 globalData" → `evaluate`；"截个图" → `simulator_screenshot`；"看看 console" → `get_simulator_console`），或一键 `auto_test`：定位项目 → 连接 → `preflight` → 跑用例，返回 pass / blocker / hint。
 
+### 连接自愈：不必记得先连接
+
+所有依赖连接的工具（automator 直连 14 个 + wechatide 需项目窗口的 7 个）在 `dispatch()` 统一过一道 `ensureAlive` 闸门：**活着直接放行，死了自动重连，仍连不上才返回 `connection_lost` 结构化 blocker。**
+
+IDE 重启 / 9420 被别的客户端占用 / 久置不用都会让 ws 静默断开，而 `mp` 引用还在——旧逻辑只查 `mp` 是否为 null，于是放行，下游抛一堆底层 ws 错误，表现为「截图/console 偶发失败、重试又好了」。现在这一层在入口处拦掉，调用方不需要记得先 `ensure_ready`，每个 handler 也不必各写一遍重试。
+
+- 探活有 2s 缓存窗口（`WECHAT_DEVTOOLS_ALIVE_CACHE_MS` 可调），连续调用几乎零额外开销
+- `WECHAT_DEVTOOLS_AUTO_HEAL=0` 退回旧行为（只查 `mp` 是否为 null），用于对比测试
+- `ensure_ready` 仍然值得显式调用：它会等运行时就绪，避免冷启动后首条调用超时
+
 ### automator 直连（20）
 
 | 工具 | 作用 | 关键参数 |
@@ -99,6 +109,8 @@ AI 对话里说人话即可（"连上开发者工具" → `ensure_ready`；"读�
 | `evaluate` 报 Unexpected number | `fn` 须是函数表达式 `() => ...` |
 | `element_tap` 报 Element not found | 选择器不对 / 未渲染：先 `get_current_page`，异步渲染等 1s |
 | 客户端看不到工具 | mcp.json 格式错误或没重启客户端 |
+| 偶发失败、重试又好了 | ws 静默断开，已由连接自愈自动处理。若设了 `WECHAT_DEVTOOLS_AUTO_HEAL=0`，去掉即可恢复自愈 |
+| `connection_lost` | 自动重连也没成功：按 hint 重试，或 `rebuild` 自愈 IDE 坏状态 |
 
 中文 Windows 的 GBK/UTF-8 混排解码与六类 blocker 分类已在 `lib/` 代码化。
 

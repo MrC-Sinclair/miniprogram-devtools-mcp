@@ -16,6 +16,26 @@
 
 ### Added
 
+- **连接自愈（统一机制）**：`dispatch()` 新增 `ensureAlive` 闸门，所有依赖连接的工具
+  （automator 直连 14 个 + wechatide 需项目窗口的 7 个）调用前先探活，死了自动重连。
+  背景：IDE 重启 / 9420 被占用 / 久置不用都会让 ws **静默断开**，而 `mp` 仍是非 null 的
+  死引用——旧逻辑只查 `mp` 是否为 null，于是放行，下游抛一堆底层 ws 错误，表现为
+  「截图/console 偶发失败、重试又好了」，Agent 无法据此自助恢复。现在这一层在入口处拦掉：
+  活着直接放行，死了自动重连，仍连不上才返回 `connection_lost` 结构化 blocker。
+  探活结果有 2s 缓存窗口（`WECHAT_DEVTOOLS_ALIVE_CACHE_MS`），连续调用几乎零额外开销；
+  `WECHAT_DEVTOOLS_AUTO_HEAL=0` 可退回旧行为（用于测试旧路径）。
+  经两类场景实测：主动 `disconnect` 后直接调 `evaluate` / `simulator_screenshot`；
+  以及双实例抢 9420 造成 A 静默死亡后直接调用——均自愈成功。
+
+### Changed
+
+- `e2e-all-tools.js` 新增 `E2E_SAFE=1` 安全模式：跳过 `rebuild` / `build_npm`
+  （仅有的两个会改项目状态的工具），其余 60+ 项照跑。让「跑一遍验证」变成随时可做、
+  不需要人事先批准的动作；要覆盖它们时不设该变量即可。
+- `e2e-all-tools.js` 组1 的 `evaluate` / `get_data` / `page_stack` 三条断言随自愈上线改契约：
+  由「未连接时应抛 Not connected」改为「未连接时应自动重连并成功」。组1 更名为
+  「静态工具 + 自愈契约」。当前安全模式全量结果：PASS 60 / FAIL 1 / WARN 4 / SKIP 5，
+  唯一 FAIL 与 4 个 WARN 均源于本机缺少 `e2e.config.js`（回落到 example 的占位符），与本次改动无关。
 - `wechatide_status` 新增官方 skill 版本自检：向 `check_wechatide_status` 上报本 MCP
   验证过的官方 skill 版本（`lib/wechatide.js` 的 `TESTED_SKILL_VERSION`，当前 `0.3.11`），
   官方 skill 随工具升级后返回 `versionRelation: agent_behind` 并附升级提示——

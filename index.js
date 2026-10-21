@@ -78,6 +78,15 @@ const CLI_CANDIDATES = cliCandidates();
 // 全局连接状态
 let mp = null; // MiniProgram 实例
 let currentPort = null;
+let lastAliveAt = 0; // 最近一次探活成功的时间戳，用于给连续调用做缓存，避免每次工具调用都探一次
+
+// 连接自愈开关：默认开。IDE 重启 / 9420 被占用 / 长时间闲置都会让 ws 静默断开，
+// 而 mp 仍是非 null 的死引用——不探活的话下游只会抛一堆底层 ws 错误，
+// 表现为「莫名失败」而非「未连接」，Agent 无法据此自助恢复。
+// 设 WECHAT_DEVTOOLS_AUTO_HEAL=0 可退回旧行为（只查 mp 是否为 null）。
+const AUTO_HEAL = process.env.WECHAT_DEVTOOLS_AUTO_HEAL !== '0';
+// 探活结果缓存窗口：一次会话里的连续工具调用不必反复探活，大幅调用几乎零额外开销
+const ALIVE_CACHE_MS = Number(process.env.WECHAT_DEVTOOLS_ALIVE_CACHE_MS) || 2000;
 
 // ============ 工具函数 ============
 
@@ -744,6 +753,7 @@ async function doConnect(port) {
   const wsEndpoint = `ws://127.0.0.1:${port}`;
   mp = await withTimeout(automator.connect({ wsEndpoint }), 15000, 'connect');
   currentPort = port;
+  lastAliveAt = 0; // 握手成功不代表 AppService 就绪，下次调用仍探一次活
   return wsEndpoint;
 }
 
@@ -925,6 +935,106 @@ async function handleEnsureReady(args) {
   }
 }
 
+// ---------- 连接自愈（统一入口） ----------
+
+/**
+ * 探活：用一个极廉价的 evaluate 探测 automator 会话是否真的活着。
+ * mp 只是对象引用——IDE 重启 / 9420 被占用 / 久置不用后 ws 会静默断开，
+ * 此时 mp 仍非 null，ensureConnected() 会放行，然后下游调用抛底层 ws 错误。
+ * 这是「截图/console 偶发失败、重试又好了」的机制根源，必须在入口处拦掉。
+ */
+async function probeAlive(timeoutMs = 5000) {
+  if (!mp) return false;
+  try {
+    await withTimeout(mp.evaluate(() => 1), timeoutMs, 'probe');
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 统一连接自愈，供 dispatch 对所有依赖连接的工具前置调用：
+ *   活着（或刚探活过）→ 直接放行
+ *   死了            → 丢掉死引用，走一遍 ensure_ready 重连
+ *   仍连不上        → 返回结构化 blocker，别让底层 ws 错误冒到 Agent 面前
+ * 返回 null 表示可以继续执行原工具；返回 MCP 结果对象表示应直接透传给调用方。
+ */
+async function ensureAlive(args) {
+  if (!AUTO_HEAL) {
+    ensureConnected();
+    return null;
+  }
+  // 缓存窗口内刚探活过且 mp 还在 → 跳过，保证 evaluate 密集调用几乎零额外开销
+  if (mp && Date.now() - lastAliveAt < ALIVE_CACHE_MS) return null;
+
+  if (await probeAlive()) {
+    lastAliveAt = Date.now();
+    return null;
+  }
+
+  // 探活失败：必须先清掉死连接，否则 handleEnsureReady 的「已连接则幂等返回」会短路
+  if (mp) {
+    try {
+      await mp.disconnect();
+    } catch (_) {
+      /* 已经死了，忽略 */
+    }
+  }
+  mp = null;
+  currentPort = null;
+  lastAliveAt = 0;
+
+  const healed = await handleEnsureReady(args || {});
+  const data = parseResult(healed);
+  if (data && data.ready === true) {
+    lastAliveAt = Date.now();
+    return null;
+  }
+  return (
+    healed ||
+    errBlock(
+      'connection_lost',
+      'automator session dropped and auto-reconnect failed',
+      '重试该工具；持续失败就手动 ensure_ready，或 rebuild 自愈 IDE 坏状态'
+    )
+  );
+}
+
+/**
+ * 需要活跃 automator 连接（或需要项目窗口已打开）的工具。
+ * wechatide 组也包含在内：simulator_screenshot / console / preview / upload 都要求
+ * 项目窗口在前，而窗口正是 ensure_ready 拉起的；让它们也走自愈，
+ * 就不会再出现「连接掉了但工具照跑、然后报 ide_window_not_active」这类假失败。
+ * 不含 wechatide_status / wechatide_poll_task / wechatide_help / project_list
+ * ——这几个不依赖连接，别让它们产生打开 IDE 的副作用。
+ */
+const CONNECTION_TOOLS = new Set([
+  // automator 直连
+  'evaluate',
+  'page_stack',
+  'navigate_to',
+  'navigate_back',
+  'get_current_page',
+  'call_wx_api',
+  'get_data',
+  'element_tap',
+  'element_input',
+  'element_scroll',
+  'run_check',
+  'rebuild',
+  'build_npm',
+  'auto_test',
+  // wechatide CLI（需要项目窗口已打开）
+  'simulator_screenshot',
+  'get_simulator_console',
+  'get_simulator_network',
+  'create_preview_qrcode',
+  'auto_preview',
+  'upload',
+  'wechatide_call',
+]);
+
 /** 从工具返回体里取出结构化数据（ok() 把内容 JSON 化塞进 content[0].text） */
 function parseResult(result) {
   const text = result && result.content && result.content[0] ? result.content[0].text : '';
@@ -998,6 +1108,7 @@ async function handleConnect(args) {
   } catch (e) {
     mp = null;
     currentPort = null;
+    lastAliveAt = 0;
     // 结构化错误：端口未监听是最常见原因，明确告诉 Agent 走 ensure_ready 自助恢复
     const portListening = await checkPort(port);
     return errBlock(
@@ -1019,6 +1130,7 @@ async function handleDisconnect() {
   }
   mp = null;
   currentPort = null;
+  lastAliveAt = 0;
   return ok('Disconnected.');
 }
 
@@ -1731,6 +1843,13 @@ async function handleRunCheck(args) {
 // ============ 工具分发 ============
 
 async function dispatch(name, args) {
+  // 统一连接自愈闸门：依赖连接的工具先过 ensureAlive——活着直接放行，死了自动重连，
+  // 连不上才返回结构化 blocker。这是「截图/console 偶发假失败」的根治点：
+  // 调用方不必记得先连接，每个 handler 也不必各写一遍重试。
+  if (CONNECTION_TOOLS.has(name)) {
+    const gate = await ensureAlive(args || {});
+    if (gate) return gate;
+  }
   switch (name) {
     case 'ensure_ready':
       return handleEnsureReady(args || {});
