@@ -18,14 +18,6 @@
 
 ### Added
 
-- **WorkBuddy 连接器包**：新增 `connector/` 目录，可按连接器市场上架。
-  结构为 `connector-meta.json` + `mcp.json` + `icon.svg` + `skills/miniprogram-devtools/SKILL.md`，
-  打包后约 5 KB。mcp.json 走 `type: stdio` + `npx` + WorkBuddy 托管 Node（`runtime: node 20`）
-  + `npmRegistry: registry.npmmirror.com`，因此**不把 43MB 生产依赖打进包**
-  （平台限制 20MB，塞不下），代码仍以 npm 包为准。
-  代价：**npm publish 成为上架硬前置**，发布顺序不能反。
-  `SKILL.md` 提供工具选择表、参数易错点、blocker 处理与高风险操作确认规则——
-  31 个工具不给指引，AI 容易选错。
 - **连接自愈（统一机制）**：`dispatch()` 新增 `ensureAlive` 闸门，所有依赖连接的工具
   （automator 直连 14 个 + wechatide 需项目窗口的 7 个）调用前先探活，死了自动重连。
   背景：IDE 重启 / 9420 被占用 / 久置不用都会让 ws **静默断开**，而 `mp` 仍是非 null 的
