@@ -2,7 +2,9 @@
 
 本项目版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)：`MAJOR.MINOR.PATCH`。
 
-## [Unreleased]
+## [0.5.0] - 2026-10-21
+
+（0.5.0 为首次发布到 npm 的版本；此前 0.1.0–0.4.0 仅存在于本地开发，未上 registry。）
 
 ### Changed
 

@@ -54,6 +54,9 @@ const {
   getToolHelp,
 } = require('./lib/wechatide');
 
+/** 版本号以 package.json 为唯一来源，避免发版后 serverInfo 还报旧号 */
+const PKG_VERSION = require('./package.json').version;
+
 /**
  * wechatide_call 透传的护栏提示。官方工具清单**不在此硬编码**——
  * 随开发者工具版本增减，写死就会漏/腐烂；清单与参数一律由 wechatide_help
@@ -1921,7 +1924,7 @@ async function dispatch(name, args) {
 // ============ MCP Server 启动 ============
 
 const server = new Server(
-  { name: 'miniprogram-devtools-mcp', version: '0.4.0' },
+  { name: 'miniprogram-devtools-mcp', version: PKG_VERSION },
   { capabilities: { tools: {} } }
 );
 

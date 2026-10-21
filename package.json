@@ -1,6 +1,6 @@
 {
   "name": "miniprogram-devtools-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "MCP server for WeChat DevTools automation via miniprogram-automator + official wechatide CLI",
   "type": "commonjs",
   "main": "index.js",
