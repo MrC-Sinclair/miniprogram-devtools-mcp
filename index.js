@@ -5,7 +5,7 @@
  * 工作机制：
  * 1. 调用 ensure_ready：自动探测端口 → 未监听则 spawn cli 启动 → 连接（全自助）
  * 2. 或直接调用 connect 连接已运行的自动化端口
- * 3. 暴露 31 个工具：
+ * 3. 暴露 32 个工具：
  *    - automator 直连（20）：ensure_ready/auto_test/connect/disconnect/status/evaluate/page_stack/
  *      navigate_to/navigate_back/get_current_page/call_wx_api/get_data/element_tap/element_input/
  *      element_scroll/preflight/rebuild/build_npm/list_checks/run_check
@@ -13,6 +13,8 @@
  *      与 wechatide_help 官方工具动态发现）：
  *      wechatide_status/wechatide_poll_task/wechatide_help/simulator_screenshot/get_simulator_console/
  *      get_simulator_network/create_preview_qrcode/auto_preview/upload/project_list/wechatide_call
+ *    - 系统层（1）：ide_window（最大化/还原 IDE 项目窗口——截图分辨率取决于模拟器面板尺寸，
+ *      官方 49 个工具没有调窗口的能力，只能动操作系统窗口）
  *
  * 设计原则：AI Agent 优先自助（ensure_ready），仅 DevTools 未安装/未登录/服务端口未开
  * 这 3 种情况才需人工介入，错误返回会明确标注 blocker 字段。
@@ -42,6 +44,7 @@ const {
   isServicePortDisabled,
 } = require('./lib/rebuild');
 const { listChecks, runChecks } = require('./lib/checks');
+const ideWindow = require('./lib/window');
 const {
   findWechatide,
   callWechatide,
@@ -223,6 +226,28 @@ function wechatideProject(args) {
   return projectPath;
 }
 
+/**
+ * 测试前把 IDE 项目窗口拉到最大（幂等，已最大化时不改变窗口）。
+ *
+ * 为什么必须做：`simulator_screenshot` 截的是模拟器面板**当前渲染出来的屏幕像素**，
+ * 不是设备原生 750px。窗口被压小时模拟器跟着缩，实测 280×600 窗口只能截出 149×321，
+ * 肉眼验收 UI 等于白做；最大化后是 527×1140。官方 49 个 wechatide 工具没有任何
+ * 调窗口/缩放的能力（automation_viewport_action 只有 scroll/screenshot/remote/close），
+ * 只能从操作系统层动窗口，这就是 lib/window.js 的职责。
+ *
+ * 失败不阻断主流程：窗口没拉大不该让截图/连接直接失败，结果塞进返回值让调用方自己判断。
+ */
+async function ensureMaxWindow(projectPath, enabled = true) {
+  // MCP 客户端偶尔会把布尔参数序列化成字符串，别让 "false" 被当成真值把窗口拉大
+  const off = enabled === false || enabled === 'false' || enabled === 0 || enabled === '0';
+  if (off) return { ok: true, skipped: true, reason: 'maximizeWindow=false' };
+  try {
+    return await ideWindow.maximize({ projectPath });
+  } catch (e) {
+    return { ok: false, reason: 'window_control_failed', error: e.message };
+  }
+}
+
 // ============ MCP 工具定义 ============
 
 const TOOLS = [
@@ -246,6 +271,13 @@ const TOOLS = [
           type: 'number',
           description: '自动化端口，默认 9420（未监听时自动扫描 9420-9430）',
           default: 9420,
+        },
+        maximizeWindow: {
+          type: 'boolean',
+          description:
+            '就绪后把 IDE 项目窗口最大化（默认 true）。截图分辨率取决于模拟器面板尺寸，' +
+            '窗口小会截出百来像素宽的糊图，故默认拉满；传 false 可关闭',
+          default: true,
         },
       },
     },
@@ -577,7 +609,10 @@ const TOOLS = [
     name: 'simulator_screenshot',
     description:
       '截取模拟器画面（走官方 wechatide CLI），返回 { path, imageWidth, imageHeight }。' +
-      '默认输出长边 1280 的优化 JPEG；optimize=false 时写原始 PNG。需项目窗口已打开（可先 ensure_ready）。',
+      '默认输出长边 1280 的优化 JPEG；optimize=false 时写原始 PNG。需项目窗口已打开（可先 ensure_ready）。' +
+      '**截图前会自动把 IDE 项目窗口最大化**——截图是模拟器面板的屏幕像素截图，窗口小则图小' +
+      '（实测 280×600 窗口只有 149×321，最大化后 527×1140）；返回值里的 window 字段是本次窗口几何，' +
+      'imageWidth < 450 时会附 hint 说明为什么看不清',
     inputSchema: {
       type: 'object',
       properties: {
@@ -587,6 +622,39 @@ const TOOLS = [
         waitForSelector: { type: 'string', description: '截图前等待出现的选择器' },
         optimize: { type: 'boolean', description: '是否优化尺寸（默认 true=JPEG）；false 时原始 PNG' },
         quality: { type: 'number', description: 'JPEG 质量 1-100，默认 80，仅 optimize=true 生效' },
+        maximizeWindow: {
+          type: 'boolean',
+          description:
+            '截图前先把 IDE 项目窗口最大化（默认 true）。截图宽度取决于模拟器面板渲染尺寸，' +
+            '窗口被压小会截出百来像素宽的糊图；传 false 可关闭',
+          default: true,
+        },
+      },
+    },
+  },
+  {
+    name: 'ide_window',
+    description:
+      '读取 / 最大化 / 还原微信开发者工具的**项目窗口**（系统层操作，不依赖 automator 与 CLI）。' +
+      'action=info 只读返回 { title, hwnd, matchedBy, before/after 宽高、maximized、minimized }；maximize 幂等（已最大化则 ' +
+      'changed=false，changed 以窗口状态真的变了为准）；restore 还原（**仅 Windows**，macOS 返回 ' +
+      'restore_unsupported_on_mac）。用途：截图分辨率取决于模拟器面板渲染尺寸，窗口被压小会截出' +
+      '百来像素宽的糊图，而官方 49 个 wechatide 工具没有任何调窗口/缩放的能力。' +
+      'simulator_screenshot 与 ensure_ready 已默认自动最大化，本工具用于手动排查窗口状态。' +
+      'matchedBy=largest 表示没按 projectname 匹配上、退化为面积最大的窗口（返回值带 warning）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['info', 'maximize', 'restore'],
+          description: 'info=只读查询（默认）；maximize=最大化；restore=还原',
+          default: 'info',
+        },
+        projectPath: {
+          type: 'string',
+          description: '小程序项目根目录；用于读 projectname 精确匹配窗口标题，不传则按窗口面积挑最大的',
+        },
       },
     },
   },
@@ -838,9 +906,10 @@ async function handleEnsureReady(args) {
   // → DevTools「最近打开的项目」列表兜底
   const projectPath = resolveProject(args.projectPath);
 
-  // 1. 已连接，幂等返回
+  // 1. 已连接，幂等返回（顺带把窗口拉满：IDE 重启后窗口会回到上次的小尺寸）
   if (mp) {
-    return ok({ ready: true, connected: true, port: currentPort, startedBySelf: false });
+    const window = await ensureMaxWindow(projectPath, args.maximizeWindow);
+    return ok({ ready: true, connected: true, port: currentPort, startedBySelf: false, projectPath, window });
   }
 
   // 2. 默认端口没监听时先扫一遍端口段：可能 DevTools 已经开在别的端口上
@@ -859,6 +928,7 @@ async function handleEnsureReady(args) {
       await connectWithRetry(port, 2, 2000);
       // 端口通 ≠ 运行时就绪：等 AppService 起来，避免首个 automator 调用超时
       const runtimeReady = await waitRuntimeReadyBestEffort();
+      const window = await ensureMaxWindow(projectPath, args.maximizeWindow);
       return ok({
         ready: true,
         connected: true,
@@ -867,6 +937,7 @@ async function handleEnsureReady(args) {
         startedBySelf: false,
         projectPath,
         runtimeReady,
+        window,
       });
     } catch (e) {
       // 端口开了但 automator 握手失败：项目可能还在编译，稍等重试即可
@@ -920,6 +991,7 @@ async function handleEnsureReady(args) {
     await connectWithRetry(port, 3, 3000);
     // 冷启动尤其需要：cli.bat auto 拉起后编译还要几十秒
     const runtimeReady = await waitRuntimeReadyBestEffort();
+    const window = await ensureMaxWindow(projectPath, args.maximizeWindow);
     return ok({
       ready: true,
       connected: true,
@@ -928,6 +1000,7 @@ async function handleEnsureReady(args) {
       cliPath,
       projectPath,
       runtimeReady,
+      window,
     });
   } catch (e) {
     return errBlock(
@@ -1632,6 +1705,8 @@ async function handleSimulatorScreenshot(args) {
   try {
     const ctx = wechatideContext(args);
     const projectPath = wechatideProject(args);
+    // 先拉窗口再截图：截图是模拟器面板的屏幕像素裁剪，窗口小则分辨率小（详见 lib/window.js）
+    const window = await ensureMaxWindow(projectPath, args.maximizeWindow);
     const flags = buildFlags({
       project: projectPath,
       path: args.path,
@@ -1648,10 +1723,27 @@ async function handleSimulatorScreenshot(args) {
       token: ctx.token,
       timeoutMs: 60000,
     });
-    return ok({ projectPath, ...result });
+    // 窗口已尽力拉满但仍截出小图（如模拟器缩放档位不是 100%）时，直接点明，别让调用方误信
+    const hint = ideWindow.smallScreenshotHint(result && result.imageWidth);
+    return ok({ projectPath, window, ...result, ...(hint ? { hint } : {}) });
   } catch (e) {
     return wechatideErr(e);
   }
+}
+
+/** ide_window：IDE 项目窗口的读 / 最大化 / 还原（系统层，不需要 automator 连接） */
+async function handleIdeWindow(args) {
+  const action = args.action || 'info';
+  if (!['info', 'maximize', 'restore'].includes(action)) {
+    return err(`unknown action: ${action}（可用 info / maximize / restore）`);
+  }
+  const projectPath = resolveProject(args.projectPath);
+  const result = await ideWindow.control({ projectPath, action });
+  // 解析不到项目根目录时只能按面积挑窗口，明确告知，别让调用方以为匹配的是目标项目
+  const extra = projectPath
+    ? {}
+    : { warning: '未解析到 projectPath（未传且自动探测失败），已按窗口面积挑最大的 IDE 窗口' };
+  return ok({ projectPath, action, ...result, ...extra });
 }
 
 /** console/network 共用：grep 命令默认取全部；官方返回的是纯字符串（grep 输出） */
@@ -1902,6 +1994,8 @@ async function dispatch(name, args) {
       return handleWechatideHelp(args || {});
     case 'simulator_screenshot':
       return handleSimulatorScreenshot(args || {});
+    case 'ide_window':
+      return handleIdeWindow(args || {});
     case 'get_simulator_console':
       return handleSimulatorLog('get_simulator_console', args || {});
     case 'get_simulator_network':

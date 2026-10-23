@@ -3,10 +3,11 @@
 [![npm version](https://img.shields.io/npm/v/miniprogram-devtools-mcp.svg)](https://www.npmjs.com/package/miniprogram-devtools-mcp)
 [![license](https://img.shields.io/npm/l/miniprogram-devtools-mcp.svg)](./LICENSE)
 
-操控微信开发者工具的 MCP server，31 个工具：
+操控微信开发者工具的 MCP server，32 个工具：
 
 - **automator 直连（20）**：ws 连调试端口（9420）——执行 JS、读写 data、导航、元素操作、静态自检 `preflight`、坏状态自愈 `rebuild`、运行时用例
 - **官方 wechatide CLI 封装（11）**：模拟器截图、console/network 日志、预览、上传体验版、项目列表、云开发透传，以及 `wechatide_help` 官方工具动态发现
+- **系统层窗口控制（1）**：`ide_window` 把 IDE 项目窗口最大化/还原——截图分辨率取决于模拟器面板渲染尺寸，官方 49 个工具没有调窗口或缩放的能力
 
 ## 与官方 MCP 的差异
 
@@ -62,7 +63,7 @@ IDE 重启 / 9420 被别的客户端占用 / 久置不用都会让 ws 静默断�
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
 | `auto_test` | 一键联调：定位项目 → 连接 → preflight → run_check，合并报告；preflight 有 error 时短路 | `projectPath`、`port`、`checkName` |
-| `ensure_ready` | 确保调试就绪（扫端口→启动 cli.bat→连接），失败返回结构化 blocker | `projectPath`、`port` |
+| `ensure_ready` | 确保调试就绪（扫端口→启动 cli.bat→连接），失败返回结构化 blocker；就绪后顺带最大化 IDE 窗口 | `projectPath`、`port`、`maximizeWindow` |
 | `connect` / `disconnect` / `status` | 连接 / 断开（不关 IDE）/ 查状态与当前页 | `port`（默认 9420） |
 | `evaluate` | 逻辑层执行 JS 函数 | `fn`（必填，函数表达式如 `() => 1+2`） |
 | `page_stack` / `get_current_page` | 页面栈 / 当前页（路径、query、data） | — |
@@ -84,12 +85,29 @@ IDE 重启 / 9420 被别的客户端占用 / 久置不用都会让 ws 静默断�
 | `wechatide_status` | 登录态 / 当前用户 / CLI 令牌 / 官方 skill 版本关系 `versionRelation`；首次触发授权弹窗 | `client`、`token`、`skillVersion` |
 | `wechatide_poll_task` | 查异步任务结果 | `taskId`（必填） |
 | `wechatide_help` | 官方工具动态发现（离线）：不传 tool 返回完整清单（分组/摘要/必填/废弃标记/skill 版本），传 tool 返回完整参数（含 action 枚举） | `tool`、`client`、`token` |
-| `simulator_screenshot` | 截模拟器，返回 `{path, imageWidth, imageHeight}` | `path`、`wait`、`waitForSelector`、`quality` |
+| `simulator_screenshot` | 截模拟器，返回 `{path, imageWidth, imageHeight, window}`；**截图前自动最大化 IDE 窗口**，宽度 < 450px 时附 `hint` | `path`、`wait`、`waitForSelector`、`quality`、`optimize`、`maximizeWindow` |
 | `get_simulator_console` / `get_simulator_network` | 读 console / network 缓冲区（grep 过滤）。Windows 下正则须用单引号 | `command`（默认 `grep -n .`） |
 | `create_preview_qrcode` / `auto_preview` | 预览二维码 / 直推开发者微信 | `pagePath`、`query`、`scene` |
 | `upload` | 上传体验版（需人工确认）；重发前必须先查旧 taskId（pending 不重发） | `version`（必填）、`desc` |
 | `project_list` | 已导入项目（只读） | `scope` |
 | `wechatide_call` | 透传任意未封装官方工具（cloud_*、compile_wxml/wxss、simulator_open_page、login 等，清单用 wechatide_help 查）；automation_* 需先 disconnect；破坏性操作需 `{"confirm": true}` | `tool`（必填）、`args`（JSON 值自动序列化） |
+
+### 系统层窗口控制（1）
+
+`simulator_screenshot` 截的是**模拟器面板当前渲染出来的屏幕像素**，不是设备原生 750px。IDE 窗口被压小时模拟器跟着缩，实测同一页面：
+
+| IDE 窗口 | 截图尺寸 | 能否肉眼验收 |
+|---|---|---|
+| 280×600（小窗） | 149×321 | 不能，字都糊成一团 |
+| 最大化 2576×1416 | 527×1140 | 可以 |
+
+官方 49 个 wechatide 工具里没有任何调窗口或调缩放的能力（`automation_viewport_action` 只有 `pageScrollTo` / `screenshot` / `stopAudits` / `remote` / `close`），所以这一层直接从操作系统动窗口。`ensure_ready` 与 `simulator_screenshot` **默认自动最大化**，一般不用手动调用。
+
+| 工具 | 作用 | 关键参数 |
+|---|---|---|
+| `ide_window` | 读 / 最大化 / 还原 IDE **项目窗口**（Windows 实测；macOS 只实现 `info`/`maximize`，`restore` 返回 `restore_unsupported_on_mac`）。`maximize` 幂等，`changed` 以窗口状态真的变了为准；`before/after` 含 `maximized` 与 `minimized` | `action`（`info` 默认 / `maximize` / `restore`）、`projectPath` |
+
+窗口标题取 `project.config.json` 的 `projectname`（实测就是项目名，如 `aura`），同名窗口按面积取最大，匹配不到时按窗口面积挑最大，此时 `matchedBy=largest` 并带 `warning`；`项目列表` 窗口会被排除。**窗口最小化时 `GetWindowRect` 返回的是图标矩形（约 160×28），此时只看 `before.minimized`，不要拿宽高当真实尺寸**——`maximize` 会顺带取消最小化。注意 IDE 重启后窗口会回到上次的小尺寸，所以每次测试入口都重新拉一次而不是只做一次。
 
 `evaluate` 的 `fn` 必须是函数表达式；`call_wx_api` 仅支持同步 API（异步用 `evaluate` 包 Promise）。
 
@@ -103,6 +121,7 @@ IDE 重启 / 9420 被别的客户端占用 / 久置不用都会让 ws 静默断�
 | `wechatide_auth_required` | 冷启动未完成或需重新授权：等 10-20s 或点「同意」，别改安全设置 |
 | `task_not_found` | taskId 已失效：重新调用原工具，别继续轮询 |
 | `ide_window_not_active` | 项目窗口没打开 / 最小化到托盘：切到前台再试 |
+| 截图只有百来像素宽、看不出问题 | IDE 窗口被压小，模拟器跟着缩。`simulator_screenshot` 已默认自动最大化；仍偏小说明模拟器缩放档位不是 100%（官方无接口可调，手动拨到 100%），或改用 `evaluate` + `createSelectorQuery` 做结构化断言 |
 | 单个工具卡满超时 | `projectPath` 大小写与 DevTools 记录不一致：留空走自动探测 |
 | `command_quote_issue` | Windows 吞双引号：grep 正则用单引号 `'error\|fail'` |
 | connect 失败 / 超时 | 端口没起：AI 调 `ensure_ready`，或手动 `cli.bat auto --project X --auto-port 9420`，等 30s |

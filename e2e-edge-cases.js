@@ -5,7 +5,7 @@
  * 用法：node e2e-edge-cases.js
  *
  * 与 e2e-all-tools.js 的分工：
- *   e2e-all-tools.js  —— 31 个工具的「主路径」全覆盖（正向 + 核心负例）
+ *   e2e-all-tools.js  —— 32 个工具的「主路径」全覆盖（正向 + 核心负例）
  *   e2e-edge-cases.js —— 参数组合 / 护栏分支 / 返回值形态 / 截断 / 状态恢复等边角
  *
  * 判定口径同主脚本：PASS / FAIL / WARN（环境限制导致的非工具缺陷）/ SKIP

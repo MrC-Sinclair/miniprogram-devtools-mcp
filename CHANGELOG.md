@@ -2,6 +2,29 @@
 
 本项目版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)：`MAJOR.MINOR.PATCH`。
 
+## [Unreleased]
+
+### Added
+
+- **自动最大化 IDE 窗口，治「截图分辨率太低」**：`simulator_screenshot` 与 `ensure_ready`
+  新增 `maximizeWindow`（默认 `true`），截图/就绪前把项目窗口拉满再动手。根因是
+  `simulator_screenshot` 截的是模拟器面板**当前渲染出来的屏幕像素**，不是设备原生 750px——
+  IDE 窗口 280×600 时只能截出 149×321（字糊成一团，肉眼验收等于白做），最大化到
+  2576×1416 后是 527×1140。官方 49 个 wechatide 工具没有任何调窗口/缩放的能力
+  （`automation_viewport_action` 的 action 只有 `pageScrollTo|screenshot|stopAudits|remote|close`），
+  所以新增系统层模块 `lib/window.js`：Windows 用 PowerShell + `ShowWindow(SW_MAXIMIZE)`，
+  macOS 用 AppleScript 设 `bounds`（未实测；`restore` 在 macOS 上明确返回
+  `restore_unsupported_on_mac`，不做假还原）。窗口以 `project.config.json` 的 `projectname`
+  匹配标题，同名窗口按面积取最大，匹配不到时按面积挑最大并返回 `matchedBy=largest` + `warning`
+  （排除「项目列表」）；`maximize` 幂等，`changed` 以窗口状态真的变了为准而非「是否调用过」；
+  窗口最小化时 `GetWindowRect` 返回图标矩形（约 160×28），故 `before/after` 额外带 `minimized`
+  标志，且 `maximize` 会顺带取消最小化。失败不阻断主流程，只把结果放进返回值的 `window` 字段。
+  截图宽度 < 450px 时额外返回 `hint` 说明为什么看不清（阈值取 450 而非 600：最大化后正常
+  就是 527px，若 527 也报警，每张图都带提示等于没有提示）。
+  注意 IDE 重启后窗口会回到上次的小尺寸，故每次测试入口都重新拉一次，而非只做一次。
+- **新工具 `ide_window`**（第 32 个）：`action=info|maximize|restore` 读/改 IDE 项目窗口几何，
+  返回前后宽高与 `maximized`，用于手动排查窗口状态。不需要 automator 连接。
+
 ## [0.5.0] - 2026-10-21
 
 （0.5.0 为首次发布到 npm 的版本；此前 0.1.0–0.4.0 仅存在于本地开发，未上 registry。）

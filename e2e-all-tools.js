@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 全量端到端测试：spawn 本 MCP server，按依赖顺序调用全部 31 个工具，输出结构化报告。
+ * 全量端到端测试：spawn 本 MCP server，按依赖顺序调用全部 32 个工具，输出结构化报告。
  *
  * 用法：
  *   node e2e-all-tools.js              完整模式（含 rebuild / build_npm，会改项目状态）
@@ -318,7 +318,7 @@ async function main() {
     const list = await send('tools/list', {});
     const tools = list.result.tools;
     const names = tools.map((t) => t.name);
-    const EXPECTED_TOOLS = 31;
+    const EXPECTED_TOOLS = 32;
     record({
       tool: 'tools/list',
       group: '协议',
@@ -574,10 +574,21 @@ async function main() {
       if (isError) return NO(short(json.error));
       return `scope=all → ${(json.projects || []).length} 个`;
     }, 120000);
+    await step('系统层', 'ide_window', { action: 'info' }, ({ json, isError }) => {
+      if (isError) return NO(short(json.error));
+      if (!json.ok) return WA(`窗口不可控：${json.reason || '-'}（非 Windows 或 IDE 未开项目窗口）`);
+      const a = json.after || {};
+      return `${json.title} ${a.width}x${a.height} maximized=${a.maximized} changed=${json.changed}`;
+    }, 60000);
     await step('wechatide', 'simulator_screenshot', {}, ({ json, isError }) => {
       if (isError) return NO(`blocker=${json.blocker || '-'} ${short(json.error)}`);
       if (json.pending) return WA(`待确认 taskId=${json.taskId}`);
-      return json.path ? `${json.imageWidth}x${json.imageHeight} → ${short(json.path, 90)}` : NO(`无 path: ${short(json)}`);
+      // 顺带验证「截图前自动最大化窗口」生效：window 字段是本次窗口几何
+      const win = json.window && json.window.after;
+      const winNote = win ? `，窗口 ${win.width}x${win.height}${win.maximized ? '(max)' : ''}` : '';
+      return json.path
+        ? `${json.imageWidth}x${json.imageHeight} → ${short(json.path, 90)}${winNote}`
+        : NO(`无 path: ${short(json)}`);
     }, 120000);
     await step('wechatide', 'simulator_screenshot', { optimize: false }, ({ json, isError }) => {
       if (isError) return NO(short(json.error));

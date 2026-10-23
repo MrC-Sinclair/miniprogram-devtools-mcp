@@ -29,7 +29,9 @@
 如果你发现下面这类问题，请按下一节报告：
 
 - 路径穿越：构造的 `projectPath` / 文件路径能读写小程序根目录之外的文件
-- 命令注入：工具参数被拼进 `cli.bat` / `wechatide` 命令行后被执行为额外命令
+- 命令注入：工具参数被拼进 `cli.bat` / `wechatide` 命令行、或拼进 `ide_window` 生成的
+  PowerShell 脚本后被执行为额外命令（脚本里的项目名来自 `project.config.json` 的
+  `projectname`，已按 PowerShell 单引号规则转义）
 - 日志 / 报告泄露：密码、Token、Cookie 等敏感值被写入工具返回值或日志
 - 越权：未经确认即触发发布、上传、预览等副作用操作
 
